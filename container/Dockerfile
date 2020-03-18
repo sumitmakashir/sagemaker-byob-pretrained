@@ -1,39 +1,67 @@
-# Build an image that can do training and inference in SageMaker
-# This is a Python 2 image that uses the nginx, gunicorn, flask stack
-# for serving inferences in a stable way.
+# Copyright 2017-2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License"). You
+# may not use this file except in compliance with the License. A copy of
+# the License is located at
+#
+#     http://aws.amazon.com/apache2.0/
+#
+# or in the "license" file accompanying this file. This file is
+# distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF
+# ANY KIND, either express or implied. See the License for the specific
+# language governing permissions and limitations under the License.
 
-FROM ubuntu:16.04
+# For more information on creating a Dockerfile
+# https://docs.docker.com/compose/gettingstarted/#step-2-create-a-dockerfile
+FROM nvidia/cuda:9.0-cudnn7-devel-ubuntu16.04
 
-MAINTAINER Amazon AI <sage-learner@amazon.com>
 
-
-RUN apt-get -y update && apt-get install -y --no-install-recommends \
-         wget \
-         python \
+ARG PYTHON_VERSION=3.6
+RUN apt-get update && apt-get install -y --no-install-recommends \
+         build-essential \
+         cmake \
          nginx \
+         jq \
+         wget \
+         git \
+         curl \
+         vim \
          ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+         libjpeg-dev \
+         libpng-dev &&\
+     rm -rf /var/lib/apt/lists/*
 
-# Here we get all python packages.
-# There's substantial overlap between scipy and numpy that we eliminate by
-# linking them together. Likewise, pip leaves the install caches populated which uses
-# a significant amount of space. These optimizations save a fair amount of space in the
-# image, which reduces start up time.
-RUN wget https://bootstrap.pypa.io/get-pip.py && python get-pip.py && \
-    pip install numpy==1.16.2 scipy==1.2.1 scikit-learn==0.20.2 pandas flask gevent gunicorn && \
-        (cd /usr/local/lib/python2.7/dist-packages/scipy/.libs; rm *; ln ../../numpy/.libs/* .) && \
-        rm -rf /root/.cache
 
-# Set some environment variables. PYTHONUNBUFFERED keeps Python from buffering our standard
-# output stream, which means that logs can be delivered to the user quickly. PYTHONDONTWRITEBYTECODE
-# keeps Python from writing the .pyc files which are unnecessary in this case. We also update
-# PATH so that the train and serve programs are found when the container is invoked.
+RUN curl -o ~/miniconda.sh -O  https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh  && \
+     chmod +x ~/miniconda.sh && \
+     ~/miniconda.sh -b -p /opt/conda && \
+     rm ~/miniconda.sh && \
+     /opt/conda/bin/conda install -y python=$PYTHON_VERSION numpy pyyaml scipy ipython mkl mkl-include cython typing && \
+     /opt/conda/bin/conda install -y -c pytorch pytorch && \
+     /opt/conda/bin/conda clean -ya
+
+ENV PATH /opt/conda/bin:$PATH
+
+RUN pip install sagemaker flask gevent gunicorn --ignore-installed PyYAML
+
+RUN pip install numpy scipy scikit-learn pandas flask gevent gunicorn joblib 
+RUN conda install -y -c conda-forge xgboost
+    #&& python setup.py build develop
+
+# Copy workaround script for incorrect hostname
+#COPY lib/changehostname.c /
+#COPY lib/start_with_right_hostname.sh /usr/local/bin/start_with_right_hostname.sh
+#RUN chmod +x /usr/local/bin/start_with_right_hostname.sh
+
 
 ENV PYTHONUNBUFFERED=TRUE
 ENV PYTHONDONTWRITEBYTECODE=TRUE
-ENV PATH="/opt/program:${PATH}"
 
-# Set up the program in the image
-COPY decision_trees /opt/program
-WORKDIR /opt/program
+ENV PATH="/opt/ml/code:${PATH}"
 
+# /opt/ml and all subdirectories are utilized by SageMaker, we use the /code subdirectory to store our user code.
+COPY algorithm /opt/ml/code
+
+WORKDIR /opt/ml/code
+
+#ENTRYPOINT ["bash", "-m", "start_with_right_hostname.sh"]
