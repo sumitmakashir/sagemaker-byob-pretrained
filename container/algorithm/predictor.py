@@ -6,14 +6,18 @@ from __future__ import print_function
 import os
 import json
 import pickle
-import StringIO
 import sys
 import signal
 import traceback
+try:
+    from StringIO import StringIO
+except ImportError:
+    from io import StringIO
 
 import flask
 
 import pandas as pd
+import numpy as np
 
 prefix = '/opt/ml/'
 model_path = os.path.join(prefix, 'model')
@@ -28,8 +32,7 @@ class ScoringService(object):
     def get_model(cls):
         """Get the model object for this instance, loading it if it's not already loaded."""
         if cls.model == None:
-            with open(os.path.join(model_path, 'decision-tree-model.pkl'), 'r') as inp:
-                cls.model = pickle.load(inp)
+            cls.model = pickle.load(open(os.path.join(model_path, 'model.pkl'), 'rb'))
         return cls.model
 
     @classmethod
@@ -40,7 +43,7 @@ class ScoringService(object):
             input (a pandas dataframe): The data on which to do the predictions. There will be
                 one prediction per row in the dataframe"""
         clf = cls.get_model()
-        return clf.predict(input)
+        return clf.predict_proba(input)
 
 # The flask app for serving predictions
 app = flask.Flask(__name__)
@@ -61,22 +64,49 @@ def transformation():
     just means one prediction per line, since there's a single column.
     """
     data = None
-
+    """
+    Input format: csv
+    """
     # Convert from CSV to pandas
-    if flask.request.content_type == 'text/csv':
-        data = flask.request.data.decode('utf-8')
-        s = StringIO.StringIO(data)
-        data = pd.read_csv(s, header=None)
+    #if flask.request.content_type == 'text/csv':
+    #    data = flask.request.data.decode('utf-8')
+    #    s = StringIO(data)
+    #    data = pd.read_csv(s)
+    
+    """
+    Input format: json. Takes input as a list with first element being list description and subsequent elements being dictionaries as individual records
+    ['description', {'key1':'value1', 'key1':'value1','keyn':'valuen'}, {'key1':'value1', 'key1':'value1','keyn':'valuen'}]
+    """
+    if flask.request.content_type == 'application/json':
+        print("Working with JSON input")
+        s = flask.request.data.decode('utf-8')
+        json_list = json.loads(s)
+        json_list = json_list[1:]
+        data = pd.DataFrame()
+        for record in json_list:
+            data = pd.concat([data, pd.DataFrame(record)], axis = 0, sort = True)
+        for f in data.columns:
+            if data[f].dtype == 'object':
+                data = data.loc[data[f] != 'java.util.ArrayList']
+
+        # Feature engineering code
+        data = data
+            
+        # list of features your model requires 
+        feature_names = []
+        data = data[feature_names].copy()
+
     else:
         return flask.Response(response='This predictor only supports CSV data', status=415, mimetype='text/plain')
 
-    print('Invoked with {} records'.format(data.shape[0]))
+    #print('Invoked with {} records'.format(data.shape[0]))
 
     # Do the prediction
     predictions = ScoringService.predict(data)
+    predictions = [p[1] for p in predictions]
 
     # Convert from numpy back to CSV
-    out = StringIO.StringIO()
+    out = StringIO()
     pd.DataFrame({'results':predictions}).to_csv(out, header=False, index=False)
     result = out.getvalue()
 
